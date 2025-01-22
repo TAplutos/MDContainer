@@ -1,12 +1,10 @@
 import subprocess
 from pathlib import Path
 import shutil
-import sys
 import os
-import random
-import string
 import shlex
 import uuid
+import json
 
 class SafeEval:
     def __init__(self, version=None, modules=None, tmp_dir=None):
@@ -31,9 +29,12 @@ class SafeEval:
         shutil.copytree(self.__module_path / ".nsjail", self.__session_path / ".nsjail")
 
         # create Dockerfile
-        with open(self.__module_path / "Dockerfile_template.txt", "r") as f:
+        with open(self.__module_path / "Dockerfile_template_python.txt", "r") as f:
             Dockerfile = f.read()
         
+
+
+
         Dockerfile = Dockerfile.format(
             version=version if version is not None else 3, 
             modules="RUN pip3 install " + " ".join(modules) if modules else ""
@@ -91,8 +92,10 @@ class SafeEval:
         # y = 4
         # REPR IS APPARENTLY SAFE TO USE HERE
         scope_definitions = "\n".join(
-            f"{var} = {repr(val)}" for var, val in scope.items()
+            f"{var} = {json.dumps(val)};"
+            for var, val in scope.items()
         )
+
 
         # Combine scope definitions with the actual code
         code_with_scope = scope_definitions + "\n" + code
