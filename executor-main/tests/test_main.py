@@ -21,7 +21,7 @@ def test_read_item(testclient: TestClient):
 
 def test_evaluate(testclient: TestClient):
     # Input data for the test
-    data = {"code": "return 1+1", "language": "python"}
+    data = {"code": "return x * x", "scope" : {'x' : 2}, "language": "python"}
 
     # Send a POST request to the root endpoint
     response = testclient.post("/evaluate", json=data)
@@ -29,4 +29,39 @@ def test_evaluate(testclient: TestClient):
     # Assertions
     assert response.status_code == 200, response.text
     assert "output" in response.json()
-    assert response.json()["output"] == 2  # Adjust based on your endpoint logic
+    assert response.json()["output"] == 4  # Adjust based on your endpoint logic
+
+def test_evaluate_fail(testclient: TestClient):
+    # Input data for the test
+    data = {"code": "returnn 1+1", "language": "python"}
+
+    # Send a POST request to the root endpoint
+    response = testclient.post("/evaluate", json=data)
+
+    # Assertions
+    assert "error" in response.json()
+    print("\n\n" + response.json()["error"])
+
+def test_evaluate_fail_javascript(testclient: TestClient):
+    # Input data for the test
+    data = {"code": "returnn 1+1", "language": "python"}
+
+    # Send a POST request to the root endpoint
+    response = testclient.post("/evaluate", json=data)
+
+    # Assertions
+    assert "error" in response.json()
+    print("\n\n" + response.json()["error"])
+
+def test_evaluate_javascript(testclient: TestClient):
+    # Input data for the test
+    data = {"code": "return 1+x;", "scope" : {'x' : 2}, "language": "javascript"}
+
+    # Send a POST request to the root endpoint
+    response = testclient.post("/evaluate", json=data)
+
+    # Assertions
+    assert response.status_code == 200, response.text
+    assert "output" in response.json()
+    assert response.json()["output"] == 3  # Adjust based on your endpoint logic
+    print("asdfasdf", response.text)

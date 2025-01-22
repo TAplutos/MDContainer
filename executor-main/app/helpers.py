@@ -55,20 +55,3 @@ def extract_value_after_return(s, h):
             return raw_value
 
     return None
-
-# Example usage:
-string = 'safe_eval_javascript74e97d02-3469-4f8b-9474-6a7e3875d19c{"returnValue":{"key":"value"}}'
-hash_value = "74e97d02-3469-4f8b-9474-6a7e3875d19c"
-print(extract_value_after_return(string, hash_value))  # Output: {'key': 'value'}
-
-string = 'safe_eval_javascript74e97d02-3469-4f8b-9474-6a7e3875d19c{"returnValue":[1,2,3]}'
-print(extract_value_after_return(string, hash_value))  # Output: [1, 2, 3]
-
-string = 'safe_eval_javascript74e97d02-3469-4f8b-9474-6a7e3875d19c{"returnValue":null}'
-print(extract_value_after_return(string, hash_value))  # Output: None
-
-string = 'safe_eval_javascript74e97d02-3469-4f8b-9474-6a7e3875d19c{"returnValue":123.45}'
-print(extract_value_after_return(string, hash_value))  # Output: 123.45
-
-string = 'safe_eval_javascript74e97d02-3469-4f8b-9474-6a7e3875d19c{"returnValue":"some string"}'
-print(extract_value_after_return(string, hash_value))  # Output: some string

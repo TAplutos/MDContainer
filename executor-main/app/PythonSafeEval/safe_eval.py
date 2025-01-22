@@ -19,12 +19,13 @@ class SafeEval:
         - _create_dockerfile()
         - Possibly how code is prepended/written (in their eval() method)
     """
-
+    max_timelimit = 100 # 100 seconds
     def __init__(self, session_id = None, tmp_dir=None):
         # Directory of the current .py file
         self._module_path = Path(__file__).parent
         self._container_has_started = False
         self._session_id = session_id
+        self._random_string = self._random_word()
         self._session_path = None
         self._seccomp_path = self._module_path / "settings/seccomp_profile.json"
         self._docker_nsjail_base_command = (
@@ -245,7 +246,7 @@ class SafeEvalPython(SafeEval):
         with open(self._session_path / "Dockerfile", "w+") as f:
             f.write(Dockerfile)
 
-    def eval(self, code=None, time_limit=0, scope=None):
+    def eval(self, code=None, time_limit=SafeEval.max_timelimit, scope=None):
         """
         Evaluate Python code with optional time limit (seconds) and scope dict.
         """
@@ -261,12 +262,24 @@ class SafeEvalPython(SafeEval):
             for var, val in scope.items()
         )
 
-        code_with_scope = scope_definitions + "\n" + code
+        # Wrap the code to capture the return value
+        wrapped_code = (
+            "import json\n"
+            "try:\n"
+            "    def user_code():\n"
+            "        user_code = None\n"
+            "        " + scope_definitions.replace("\n", "\n        ") + "\n"
+            "        " + code.replace("\n", "\n        ") + "\n"  # Indent user code
+            "    result = user_code()\n"
+            "    print('" + self._random_string  + "' + json.dumps({'returnValue': result}))\n"
+            "except Exception as e:\n"
+            "    print(json.dumps({'error': str(e)}), file=sys.stderr)\n"
+        )
 
         # Write to a temporary file in the volume
         volume_filename = self._random_word() + ".py"
         with open(self._session_path / volume_filename, "w", encoding="utf-8") as f:
-            f.write(code_with_scope)
+            f.write(wrapped_code)
 
         # Command template for running the .py file
         python_command = (
@@ -276,7 +289,7 @@ class SafeEvalPython(SafeEval):
             "--time_limit {time_limit} "
             "/usr/bin/python3 /volume/{volume_filename}"
         )
-        return self._execute_file_in_volume(python_command, volume_filename, time_limit)
+        return self._execute_file_in_volume(python_command, volume_filename, time_limit), self._random_string
 
 # ------------------------------------------------------------------------------
 # SafeEvalJavaScript
@@ -313,7 +326,7 @@ class SafeEvalJavaScript(SafeEval):
             f.write(Dockerfile)
             
     
-    def eval(self, code=None, time_limit=0, scope=None):
+    def eval(self, code=None, time_limit=SafeEval.max_timelimit, scope=None):
         """
         Evaluate JS code with optional time limit (seconds) and scope dict.
         """
@@ -329,19 +342,28 @@ class SafeEvalJavaScript(SafeEval):
             for var, val in scope.items()
         )
 
-        code_with_scope = scope_definitions + "\n" + code
+        # Wrap the code to capture the return value
+        wrapped_code = (
+            scope_definitions +
+            "\ntry {" +
+            f"\n  const result = (() => {{ {code} }})();" +
+            "\n  console.log('" +  self._random_string + "' + JSON.stringify({ returnValue: result }));" +
+            "\n} catch (error) {" +
+        "\n  console.error(JSON.stringify({ error: error.message }));" +
+            "\n}"
+        )
 
         # Write to a temporary file in the volume
         volume_filename = self._random_word() + ".js"
         with open(self._session_path / volume_filename, "w", encoding="utf-8") as f:
-            f.write(code_with_scope)
+            f.write(wrapped_code)
 
         # Command template for running the .js file
         node_command = (
             self._docker_nsjail_base_command + 
             "/usr/bin/node /volume/{volume_filename}"
         )
-        return self._execute_file_in_volume(node_command, volume_filename, time_limit)
+        return self._execute_file_in_volume(node_command, volume_filename, time_limit), self._random_string
 
 
 # ------------------------------------------------------------------------------

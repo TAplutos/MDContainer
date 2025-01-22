@@ -1,3 +1,10 @@
+making main() uncallable
+making scope as variables rather than arguments so you can do shit like x:2 and y:x
+update the weird hash mechanism of getting the return value
+make it faster, its kinda slow
+GPT processing of the output for simple user understanding.  LLM auto correct?
+
+
 # General Guidelines
 Thank you for interviewing with Sample! This README should serve as the instructions for your interview, and if needed you can directly contact me at (408) 425 2215 or via email (aash@samplehc.com).
 

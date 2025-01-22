@@ -2,6 +2,10 @@ from fastapi import FastAPI, Request, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 import asyncio
+from fastapi.responses import JSONResponse
+from app.PythonSafeEval.safe_eval import SafeEvalPython, SafeEvalJavaScript
+from app import helpers
+
 # from app import pythonExecutor
 
 app = FastAPI()
@@ -44,20 +48,68 @@ def root():
 
 @app.post("/evaluate")
 async def evaluate(request: Request):
-    
-
-    evaluator = SafeEval()
-    safe_globals = {"__builtins__": {}}
-
     try:
-        result = evaluator.eval(code, globals=safe_globals)
-        return {"status": "success", "result": result}
+        # Parse the incoming JSON request
+        body = await request.json()
+        code = body.get("code")
+        scope = body.get("scope", {})
+        language = body.get("language")
+
+        # Validate required fields
+        if not code or not language:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "Both 'code' and 'language' fields are required."}
+            )
+
+        # Choose the appropriate evaluator
+        if language == "python":
+            evaluator = SafeEvalPython(version="3.8", modules=["numpy"]) # TODO: add more modules here that could work.  need to figure out what you can do
+        elif language == "javascript":
+            evaluator = SafeEvalJavaScript(version="16", modules=[])
+        else:
+            return JSONResponse(
+                status_code=400,
+                content={"error": f"Unsupported language: {language}"}
+            )
+
+        # Evaluate the code
+        result, hashed_s = evaluator.eval(code=code, scope=scope)
+        
+        out =  result.get("stdout")
+        err =  result.get("stderr")
+        returncode =  result.get("returncode")
+        if returncode != 0:
+            return JSONResponse(
+                status_code=400,
+                content={"error": f"An error occurred: {err}"}
+            )
+
+        if returncode == 0:
+            output = helpers.extract_value_after_return(out, hashed_s)
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "output": output,
+                    "stdout": out
+                }
+            )
+
     except Exception as e:
-        return {"status": "error", "message": str(e)}
+        # Handle unexpected errors
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": f"An error occurred: {str(e)}",
+                "stdout": out
+            }
+        )
     
-    
-    
-    
-    
-    # TODO: Your evaluation code here
-    return {"output": 1}
+if __name__ == "__main__":
+    evaluator = SafeEvalJavaScript(version="16", modules=[]) # TODO: add more modules here that could work.  need to figure out what you can do
+    result = evaluator.eval(code="return 1;", scope={'x' : 2})
+    print("asdfasdf", result)
+
+    evaluator = SafeEvalPython(version="3.8", modules=["numpy"])
+    result = evaluator.eval(code="print('asdf')", scope={})
+    print("asdfasdf", result)
