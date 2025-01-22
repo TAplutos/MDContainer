@@ -1,6 +1,5 @@
 # Dockerfile
 # Uses multi-stage builds requiring Docker 17.05 or higher
-# See https://docs.docker.com/develop/develop-images/multistage-build/
 
 # Creating a python base with shared environment variables
 FROM python:3.12-slim-bullseye AS python-base
@@ -17,9 +16,7 @@ ENV PYTHONUNBUFFERED=1 \
 
 ENV PATH="$POETRY_HOME/bin:$VENV_PATH/bin:$PATH"
 
-RUN apt-get update && apt-get install -y docker.io
-
-# builder-base is used to build dependencies
+# builder-base is used to build dependencies and now includes Docker CLI
 FROM python-base AS builder-base
 RUN buildDeps="build-essential" \
     && apt-get update \
@@ -27,15 +24,13 @@ RUN buildDeps="build-essential" \
         curl \
         vim \
         netcat \
+        docker.io \ # Added Docker CLI installation
     && apt-get install -y --no-install-recommends $buildDeps \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Poetry - respects $POETRY_VERSION & $POETRY_HOME
 ENV POETRY_VERSION=1.2.1
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
-# RUN curl -sSL https://install.python-poetry.org | POETRY_HOME=${POETRY_HOME} python3 - --version ${POETRY_VERSION} && \
-#     chmod a+x /opt/poetry/bin/poetry
-
 RUN curl -sSL https://install.python-poetry.org | python3 - --version 1.8.3 && \
     chmod a+x /opt/poetry/bin/poetry && \
     ln -s /root/.local/bin/poetry /usr/local/bin/poetry
@@ -47,7 +42,6 @@ COPY ./poetry.lock ./pyproject.toml ./
 RUN poetry install --only main  # respects
 
 # 'development' stage installs all dev deps and can be used to develop code.
-# For example using docker-compose to mount local volume under /app
 FROM python-base as development
 ENV FASTAPI_ENV=development
 
@@ -72,19 +66,18 @@ CMD ["uvicorn", "--reload", "--host=0.0.0.0", "--port=8000", "main:app"]
 
 
 # 'lint' stage runs black and isort
-# running in check mode means build will fail if any linting errors occur
 FROM development AS lint
 RUN black --config ./pyproject.toml --check app tests
 RUN isort --settings-path ./pyproject.toml --recursive --check-only
 CMD ["tail", "-f", "/dev/null"]
 
 # 'test' stage runs our unit tests with pytest and
-# coverage.  Build will fail if test coverage is under 95%
+# coverage.
 FROM development AS test
 RUN coverage run --rcfile ./pyproject.toml -m pytest ./tests
 RUN coverage report --fail-under 95
 
-# 'production' stage uses the clean 'python-base' stage and copyies
+# 'production' stage uses the clean 'python-base' stage and copies
 # in only our runtime deps that were installed in the 'builder-base'
 FROM python-base AS production
 ENV FASTAPI_ENV=production
@@ -97,7 +90,7 @@ RUN chmod +x /docker-entrypoint.sh
 
 # Create user with the name poetry
 RUN groupadd -g 1500 poetry && \
-    useradd -m -u 1500 -g poetry -G docker poetry
+    useradd -m -u 1500 -g poetry poetry
 
 COPY --chown=poetry:poetry ./app /app
 USER poetry

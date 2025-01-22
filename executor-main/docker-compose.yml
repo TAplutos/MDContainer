@@ -1,7 +1,9 @@
-# version: "3.7" # Uncomment for older compose versions
+version: "3.8"  # Using a newer version to support volumes properly
 services:
   poetry-project:
     container_name: poetry-project
     build: .
     ports:
       - "8000:8000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock

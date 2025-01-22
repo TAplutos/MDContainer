@@ -1,5 +1,6 @@
 import json
 
+
 def extract_value_after_return(s, h):
     """
     Extracts the value associated with "returnValue" following a specific hash in a string.
@@ -28,9 +29,9 @@ def extract_value_after_return(s, h):
         brace_count = 0
         value_end = None
         for i, char in enumerate(target_substring[value_start:], start=value_start):
-            if char == '{':
+            if char == "{":
                 brace_count += 1
-            elif char == '}':
+            elif char == "}":
                 if brace_count == 0:
                     value_end = i
                     break
@@ -46,7 +47,7 @@ def extract_value_after_return(s, h):
             return json.loads(raw_value)
         except json.JSONDecodeError:
             # Try removing the last character if it's a closing brace
-            if raw_value.endswith('}'):
+            if raw_value.endswith("}"):
                 try:
                     return json.loads(raw_value[:-1].strip())
                 except json.JSONDecodeError:

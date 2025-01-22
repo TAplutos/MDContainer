@@ -1,10 +1,11 @@
-import subprocess
-import shutil
-import uuid
-import os
 import json
+import os
 import shlex
+import shutil
+import subprocess
+import uuid
 from pathlib import Path
+import stat
 
 
 class SafeEval:
@@ -19,8 +20,10 @@ class SafeEval:
         - _create_dockerfile()
         - Possibly how code is prepended/written (in their eval() method)
     """
-    max_timelimit = 100 # 100 seconds
-    def __init__(self, session_id = None, tmp_dir=None):
+
+    max_timelimit = 100  # 100 seconds
+
+    def __init__(self, session_id=None, tmp_dir=None):
         # Directory of the current .py file
         self._module_path = Path(__file__).parent
         self._container_has_started = False
@@ -45,6 +48,21 @@ class SafeEval:
             if not os.path.exists(self._session_path):
                 break
 
+        if not subprocess.run("git --version", shell=True, capture_output=True).stdout.decode('utf-8').startswith("git version"):
+            raise Exception("Git is not installed or have no permission to access.")
+        if not subprocess.run("docker ps", shell=True, capture_output=True).stdout.decode('utf-8').startswith("CONTAINER ID"):
+            raise Exception("Docker is not installed or have no permission to access.")
+
+        # fetch nsjail
+        if not Path(self._module_path / ".nsjail").is_dir():
+            os.mkdir(self._module_path / ".nsjail")
+            
+            result = subprocess.run("git clone https://github.com/google/nsjail.git {module_path}/.nsjail".format(module_path=self._module_path), shell=True, stdout=subprocess.DEVNULL)
+            if result.returncode != 0:
+                shutil.rmtree(self._module_path / ".nsjail")
+                raise RuntimeError("Failed to clone nsjail, make sure that the internet is connected and the module directory is writable.")
+        
+
         # Create the .jailfs directory if needed
         if not (self._module_path / ".jailfs").is_dir():
             (self._module_path / ".jailfs").mkdir(parents=True, exist_ok=True)
@@ -53,10 +71,7 @@ class SafeEval:
         self._session_path.mkdir(parents=True, exist_ok=True)
 
         # Copy nsjail files into the session
-        shutil.copytree(
-            self._module_path / ".nsjail",
-            self._session_path / ".nsjail"
-        )
+        shutil.copytree(self._module_path / ".nsjail", self._session_path / ".nsjail")
 
         # Let the child class provide the Dockerfile contents
         self._create_dockerfile()
@@ -74,13 +89,13 @@ class SafeEval:
                 subprocess.run(
                     ["docker", "stop", self._session_id],
                     check=True,
-                    stdout=subprocess.DEVNULL
+                    stdout=subprocess.DEVNULL,
                 )
                 subprocess.run(
                     f"docker image remove {self._session_id}_image --no-prune",
                     shell=True,
                     check=True,
-                    stdout=subprocess.DEVNULL
+                    stdout=subprocess.DEVNULL,
                 )
             except Exception:
                 pass
@@ -113,7 +128,7 @@ class SafeEval:
             shell=True,
             cwd=self._session_path,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE
+            stderr=subprocess.PIPE,
         )
         if result.returncode != 0:
             raise RuntimeError(
@@ -125,15 +140,12 @@ class SafeEval:
         Run the Docker container in detached mode.
         """
         run_cmd = (
-            f'docker run --rm --privileged --security-opt seccomp={self._seccomp_path} --name={self._session_id} '
+            f"docker run --rm --privileged --security-opt seccomp={self._seccomp_path} --name={self._session_id} "
             f'-v "{self._session_path}:/volume" '
-            f'-d -it {self._session_id}_image'
+            f"-d -it {self._session_id}_image"
         )
         result = subprocess.run(
-            run_cmd,
-            shell=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE
+            run_cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE
         )
         if result.returncode != 0:
             raise RuntimeError(
@@ -150,29 +162,41 @@ class SafeEval:
         :param time_limit: The time limit in seconds
         :return: dict with keys "stdout", "stderr", "returncode"
         """
+        volume_filename = str(volume_filename)
         command = command_template.format(
             session_id=self._session_id,
             time_limit=time_limit,
-            volume_filename=volume_filename
+            volume_filename=volume_filename[4:],
         )
+        # Change file permissions to 755
+        print("path existence", os.path.exists(volume_filename))
+        print("path is", volume_filename)
+        file_status = os.stat(volume_filename)
+
+        # Extract the file's permission bits
+        permissions = file_status.st_mode
+        subprocess.run(['cat', 'PythonSafeEval/.jailfs/' + self._session_id], check=True)
+        # Print the file permissions in 777 format
+        print("File permissions in 777 format: {:o}".format(permissions & 0o777))
+
         try:
             result = subprocess.run(
                 command,
                 shell=True,
                 check=True,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE
+                stderr=subprocess.PIPE,
             )
             return {
                 "stdout": result.stdout.decode("utf-8"),
                 "stderr": result.stderr.decode("utf-8"),
-                "returncode": result.returncode
+                "returncode": result.returncode,
             }
         except subprocess.CalledProcessError as e:
             return {
                 "stdout": e.stdout.decode("utf-8"),
                 "stderr": e.stderr.decode("utf-8"),
-                "returncode": e.returncode
+                "returncode": e.returncode,
             }
 
     # def _execute_code_in_memory(self, command_template, code_string, time_limit):
@@ -212,9 +236,11 @@ class SafeEval:
     def _random_word(self):
         return str(uuid.uuid4())
 
+
 # ------------------------------------------------------------------------------
 # SafeEvalPython
 # ------------------------------------------------------------------------------
+
 
 class SafeEvalPython(SafeEval):
     """
@@ -231,7 +257,7 @@ class SafeEvalPython(SafeEval):
         self.python_version = version if version is not None else "3.8"
         self.modules = modules if modules else []
         self._session_id = "safe_eval_python" + self._random_word()
-        super().__init__(tmp_dir=tmp_dir, session_id = self._session_id)
+        super().__init__(tmp_dir=tmp_dir, session_id=self._session_id)
 
     def _create_dockerfile(self):
         # create Dockerfile
@@ -239,8 +265,8 @@ class SafeEvalPython(SafeEval):
             Dockerfile = f.read()
 
         Dockerfile = Dockerfile.format(
-            version=self.python_version, 
-            modules="RUN pip3 install " + " ".join(self.modules)
+            version=self.python_version,
+            modules="RUN pip3 install " + " ".join(self.modules),
         )
 
         with open(self._session_path / "Dockerfile", "w+") as f:
@@ -258,8 +284,7 @@ class SafeEvalPython(SafeEval):
 
         # Build Python lines that define each variable
         scope_definitions = "\n".join(
-            f"{var} = {json.dumps(val)};"
-            for var, val in scope.items()
+            f"{var} = {json.dumps(val)};" for var, val in scope.items()
         )
 
         # Wrap the code to capture the return value
@@ -271,7 +296,9 @@ class SafeEvalPython(SafeEval):
             "        " + scope_definitions.replace("\n", "\n        ") + "\n"
             "        " + code.replace("\n", "\n        ") + "\n"  # Indent user code
             "    result = user_code()\n"
-            "    print('" + self._random_string  + "' + json.dumps({'returnValue': result}))\n"
+            "    print('"
+            + self._random_string
+            + "' + json.dumps({'returnValue': result}))\n"
             "except Exception as e:\n"
             "    print(json.dumps({'error': str(e)}), file=sys.stderr)\n"
         )
@@ -287,13 +314,19 @@ class SafeEvalPython(SafeEval):
             "--user 99999 --group 99999 "
             "--disable_proc --chroot / --really_quiet "
             "--time_limit {time_limit} "
-            "/usr/bin/python3 /volume/{volume_filename}"
+            "/usr/bin/python3 {volume_filename}"
         )
-        return self._execute_file_in_volume(python_command, volume_filename, time_limit), self._random_string
+
+        return (
+            self._execute_file_in_volume(python_command, (self._session_path / volume_filename), time_limit),
+            self._random_string,
+        )
+
 
 # ------------------------------------------------------------------------------
 # SafeEvalJavaScript
 # ------------------------------------------------------------------------------
+
 
 class SafeEvalJavaScript(SafeEval):
     """
@@ -310,7 +343,7 @@ class SafeEvalJavaScript(SafeEval):
         self.node_version = version if version is not None else "16"
         self.modules = modules if modules else []
         self._session_id = "safe_eval_javascript" + self._random_word()
-        super().__init__(tmp_dir=tmp_dir, session_id = self._session_id)
+        super().__init__(tmp_dir=tmp_dir, session_id=self._session_id)
 
     def _create_dockerfile(self):
         # create Dockerfile
@@ -319,13 +352,14 @@ class SafeEvalJavaScript(SafeEval):
 
         Dockerfile = Dockerfile.format(
             version=self.node_version,
-            modules="RUN npm install -g " + " ".join(self.modules) if self.modules else ""
+            modules=(
+                "RUN npm install -g " + " ".join(self.modules) if self.modules else ""
+            ),
         )
 
         with open(self._session_path / "Dockerfile", "w+") as f:
             f.write(Dockerfile)
-            
-    
+
     def eval(self, code=None, time_limit=SafeEval.max_timelimit, scope=None):
         """
         Evaluate JS code with optional time limit (seconds) and scope dict.
@@ -338,19 +372,20 @@ class SafeEvalJavaScript(SafeEval):
 
         # Prepend scope variables as `let x = ...;`
         scope_definitions = "\n".join(
-            f"let {var} = {json.dumps(val)};"
-            for var, val in scope.items()
+            f"let {var} = {json.dumps(val)};" for var, val in scope.items()
         )
 
         # Wrap the code to capture the return value
         wrapped_code = (
-            scope_definitions +
-            "\ntry {" +
-            f"\n  const result = (() => {{ {code} }})();" +
-            "\n  console.log('" +  self._random_string + "' + JSON.stringify({ returnValue: result }));" +
-            "\n} catch (error) {" +
-        "\n  console.error(JSON.stringify({ error: error.message }));" +
-            "\n}"
+            scope_definitions
+            + "\ntry {"
+            + f"\n  const result = (() => {{ {code} }})();"
+            + "\n  console.log('"
+            + self._random_string
+            + "' + JSON.stringify({ returnValue: result }));"
+            + "\n} catch (error) {"
+            + "\n  console.error(JSON.stringify({ error: error.message }));"
+            + "\n}"
         )
 
         # Write to a temporary file in the volume
@@ -360,10 +395,12 @@ class SafeEvalJavaScript(SafeEval):
 
         # Command template for running the .js file
         node_command = (
-            self._docker_nsjail_base_command + 
-            "/usr/bin/node /volume/{volume_filename}"
+            self._docker_nsjail_base_command + "/usr/bin/node /volume/{volume_filename}"
         )
-        return self._execute_file_in_volume(node_command, volume_filename, time_limit), self._random_string
+        return (
+            self._execute_file_in_volume(node_command, volume_filename, time_limit),
+            self._random_string,
+        )
 
 
 # ------------------------------------------------------------------------------
@@ -381,7 +418,7 @@ print("x:", x)
 print("y:", y)
 """,
         scope={"x": 100, "y": 200},
-        time_limit=10
+        time_limit=10,
     )
     print("Python STDOUT:", result_py["stdout"])
     print("Python STDERR:", result_py["stderr"])
@@ -399,7 +436,7 @@ console.log("x + 2 =", x + 2);
 console.log("y * 3 =", y * 3);
 """,
         scope={"x": 10, "y": 5},
-        time_limit=10
+        time_limit=10,
     )
     print("JS STDOUT:", result_js["stdout"])
     print("JS STDERR:", result_js["stderr"])
