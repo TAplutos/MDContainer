@@ -18,28 +18,10 @@ class SafeEval:
                 break
 
         self.__container_has_started = False
-        self.seccomp_path = self.__module_path / "settings/seccomp_profile.json"
-        
-        # check permission
-        if not subprocess.run("git --version", shell=True, capture_output=True).stdout.decode('utf-8').startswith("git version"):
-            raise Exception("Git is not installed or have no permission to access.")
-        if not subprocess.run("docker ps", shell=True, capture_output=True).stdout.decode('utf-8').startswith("CONTAINER ID"):
-            raise Exception("Docker is not installed or have no permission to access.")
-
-        # fetch nsjail
-        if not Path(self.__module_path / ".nsjail").is_dir():
-            os.mkdir(self.__module_path / ".nsjail")
-            
-            result = subprocess.run("git clone https://github.com/google/nsjail.git {module_path}/.nsjail".format(module_path=self.__module_path), shell=True, stdout=subprocess.DEVNULL)
-            if result.returncode != 0:
-                shutil.rmtree(self.__module_path / ".nsjail")
-                raise RuntimeError("Failed to clone nsjail, make sure that the internet is connected and the module directory is writable.")
         
         # create .jailfs
         if not (self.__module_path / ".jailfs").is_dir():
             os.mkdir(self.__module_path / ".jailfs")
-        
-
 
         # create session path
         if not self.__session_path.is_dir():
@@ -66,20 +48,7 @@ class SafeEval:
             raise RuntimeError("Failed to build docker images: " + result.stderr.decode("utf-8"))
 
         # run docker image
-        result = subprocess.run(
-            (
-                """docker run --rm --privileged \
-                --security-opt seccomp={seccomp_path} \
-                --name={session_id} -v "{session_path}:/volume" \
-                -d -it {session_id}_image"""
-            ).format(
-                session_id=self.__session_id, 
-                session_path=self.__session_path,
-                seccomp_path=self.seccomp_path), 
-            shell=True, 
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE
-        )
+        result = subprocess.run("""docker run --rm --privileged --name={session_id} -v "{session_path}:/volume" -d -it {session_id}_image""".format(session_id=self.__session_id, session_path=self.__session_path), shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         if result.returncode != 0:
             raise RuntimeError("Failed to start docker container: " + result.stderr.decode("utf-8"))
 
@@ -102,16 +71,38 @@ class SafeEval:
         except FileNotFoundError:
             pass
 
-    def eval(self, code=None, time_limit=0):
+            
+    def eval(self, code=None, time_limit=0, scope=None):
+        """
+        Evaluate code with an optional time limit and an optional scope dict.
+        The scope dictionary contains variable names mapped to their values,
+        e.g. {"x": 2, "y": 4}.
+        """
         if code is None:
             return
-        
-        # save file to the volume
+
+        # If no scope is provided, default to empty
+        if scope is None:
+            scope = {}
+
+        # Build Python lines that define each variable in scope
+        # e.g. for {"x": 2, "y": 4}, we produce:
+        # x = 2
+        # y = 4
+        # REPR IS APPARENTLY SAFE TO USE HERE
+        scope_definitions = "\n".join(
+            f"{var} = {repr(val)}" for var, val in scope.items()
+        )
+
+        # Combine scope definitions with the actual code
+        code_with_scope = scope_definitions + "\n" + code
+
+        # Save code to the volume
         volume_filename = self.__random_word() + ".py"
-        with open(self.__session_path / volume_filename, "w+") as f:
-            f.write(code)
-        
-        # execute code
+        with open(self.__session_path / volume_filename, "w+", encoding="utf-8") as f:
+            f.write(code_with_scope)
+
+        # Execute file
         return self.__execute_file_in_volume(volume_filename, time_limit)
 
         # return self.__execute_code_in_memory(code, time_limit)
@@ -122,11 +113,8 @@ class SafeEval:
             --disable_proc --chroot / --really_quiet \
             --time_limit {time_limit} \
             /usr/bin/python3 /volume/{volume_filename}"\
-            ).format(
-                session_id=self.__session_id, 
-                time_limit=time_limit, 
-                volume_filename=volume_filename,
-            )
+            ).format(session_id=self.__session_id, time_limit=time_limit, volume_filename=volume_filename)
+        
         try:
             result = subprocess.run(command, shell=True, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             # Return both stdout and stderr
@@ -157,7 +145,7 @@ class SafeEval:
             time_limit=time_limit,
             code=quoted_code
         )
-        print(f"Debug Command: {command}")
+        
         try:
             result = subprocess.run(command, shell=True, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             # Return both stdout and stderr
@@ -185,5 +173,9 @@ class SafeEval:
 if __name__ == "__main__":
     sf = SafeEval(version="3.8", modules=["setuptools"])
     print(sf.eval(code="""import time
-time.sleep(10)
-print("done")""", time_limit=15))
+print("done")
+a = x + 1
+y = 1 + y
+print(a, y)""", 
+    scope={"x": 2, "y": 4},
+    time_limit=15))
