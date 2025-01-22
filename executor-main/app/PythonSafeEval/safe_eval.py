@@ -1,184 +1,384 @@
 import subprocess
-from pathlib import Path
 import shutil
-import os
-import shlex
 import uuid
+import os
 import json
+import shlex
+from pathlib import Path
+
 
 class SafeEval:
-    def __init__(self, version=None, modules=None, tmp_dir=None):
-        self.__module_path = Path(__file__).parent
-        while True:
-            self.__session_id = "python_safe_eval_" + self.__random_word()
-            self.__session_path = self.__module_path / Path('.jailfs') / Path(self.__session_id) if tmp_dir is None else Path(tmp_dir) / Path(self.__session_id)
-            if not tmp_dir or not os.path.exists(self.__session_path):
-                break
+    """
+    Base class that manages:
+    1) Creating and cleaning up a temporary session directory
+    2) Copying nsjail files
+    3) Building and running a Docker container
+    4) Providing helper methods to execute commands inside the container via nsjail
 
-        self.__container_has_started = False
-        
-        # create .jailfs
-        if not (self.__module_path / ".jailfs").is_dir():
-            os.mkdir(self.__module_path / ".jailfs")
+    Child classes (e.g. SafeEvalPython, SafeEvalJavaScript) should override:
+        - _create_dockerfile()
+        - Possibly how code is prepended/written (in their eval() method)
+    """
 
-        # create session path
-        if not self.__session_path.is_dir():
-            os.mkdir(self.__session_path)
-        
-        # copy nsjail
-        shutil.copytree(self.__module_path / ".nsjail", self.__session_path / ".nsjail")
-
-        # create Dockerfile
-        with open(self.__module_path / "Dockerfile_template_python.txt", "r") as f:
-            Dockerfile = f.read()
-        
-
-
-
-        Dockerfile = Dockerfile.format(
-            version=version if version is not None else 3, 
-            modules="RUN pip3 install " + " ".join(modules) if modules else ""
+    def __init__(self, session_id = None, tmp_dir=None):
+        # Directory of the current .py file
+        self._module_path = Path(__file__).parent
+        self._container_has_started = False
+        self._session_id = session_id
+        self._session_path = None
+        self._seccomp_path = self._module_path / "settings/seccomp_profile.json"
+        self._docker_nsjail_base_command = (
+            "docker exec {session_id} nsjail "
+            "--user 99999 --group 99999 "
+            "--disable_proc --chroot / --really_quiet "
+            "--time_limit {time_limit} "
         )
 
-        with open(self.__session_path / "Dockerfile", "w+") as f:
-            f.write(Dockerfile)
+        # Generate a unique session ID
+        while True:
+            if tmp_dir is None:
+                self._session_path = self._module_path / ".jailfs" / self._session_id
+            else:
+                self._session_path = Path(tmp_dir) / self._session_id
 
-        # build docker image
-        result = subprocess.run("docker build --network=host -t {session_id}_image .".format(session_id=self.__session_id), shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, cwd=self.__session_path)
-        if result.returncode != 0:
-            raise RuntimeError("Failed to build docker images: " + result.stderr.decode("utf-8"))
+            if not os.path.exists(self._session_path):
+                break
 
-        # run docker image
-        result = subprocess.run("""docker run --rm --privileged --name={session_id} -v "{session_path}:/volume" -d -it {session_id}_image""".format(session_id=self.__session_id, session_path=self.__session_path), shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-        if result.returncode != 0:
-            raise RuntimeError("Failed to start docker container: " + result.stderr.decode("utf-8"))
+        # Create the .jailfs directory if needed
+        if not (self._module_path / ".jailfs").is_dir():
+            (self._module_path / ".jailfs").mkdir(parents=True, exist_ok=True)
 
-        self.__container_has_started = True
+        # Create the session path
+        self._session_path.mkdir(parents=True, exist_ok=True)
+
+        # Copy nsjail files into the session
+        shutil.copytree(
+            self._module_path / ".nsjail",
+            self._session_path / ".nsjail"
+        )
+
+        # Let the child class provide the Dockerfile contents
+        self._create_dockerfile()
+
+        # Build the Docker image
+        self._build_docker_image()
+
+        # Run the Docker container in detached mode
+        self._run_container()
 
     def __del__(self):
-        if self.__container_has_started:
+        # Cleanup when the object is destroyed
+        if self._container_has_started:
             try:
-                # stop and remove docker container
-                subprocess.run("docker stop {session_id}".format(session_id=self.__session_id).split(), check=True, stdout=subprocess.DEVNULL)
-
-                # remove image 
-                subprocess.run("docker image remove {session_id}_image --no-prune".format(session_id=self.__session_id), shell=True, check=True, stdout=subprocess.DEVNULL)
-            except:
+                subprocess.run(
+                    ["docker", "stop", self._session_id],
+                    check=True,
+                    stdout=subprocess.DEVNULL
+                )
+                subprocess.run(
+                    f"docker image remove {self._session_id}_image --no-prune",
+                    shell=True,
+                    check=True,
+                    stdout=subprocess.DEVNULL
+                )
+            except Exception:
                 pass
 
         try:
-            # remove session directory
-            shutil.rmtree(self.__session_path)
+            shutil.rmtree(self._session_path)
         except FileNotFoundError:
             pass
 
-            
+    # --------------------------------------------------------------------------
+    # Child classes should override the following method with their Dockerfile
+    # --------------------------------------------------------------------------
+    def _create_dockerfile(self):
+        """
+        Return the contents of the Dockerfile as a string.
+        This should be overridden by child classes.
+        """
+        raise NotImplementedError("Child class must implement _create_dockerfile().")
+
+    # --------------------------------------------------------------------------
+    # Internal helper methods
+    # --------------------------------------------------------------------------
+    def _build_docker_image(self):
+        """
+        Build the Docker image for this session.
+        """
+        build_cmd = f"docker build --network=host -t {self._session_id}_image ."
+        result = subprocess.run(
+            build_cmd,
+            shell=True,
+            cwd=self._session_path,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"Failed to build docker image: {result.stderr.decode('utf-8')}"
+            )
+
+    def _run_container(self):
+        """
+        Run the Docker container in detached mode.
+        """
+        run_cmd = (
+            f'docker run --rm --privileged --security-opt seccomp={self._seccomp_path} --name={self._session_id} '
+            f'-v "{self._session_path}:/volume" '
+            f'-d -it {self._session_id}_image'
+        )
+        result = subprocess.run(
+            run_cmd,
+            shell=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                "Failed to start docker container: " + result.stderr.decode("utf-8")
+            )
+        self._container_has_started = True
+
+    def _execute_file_in_volume(self, command_template, volume_filename, time_limit):
+        """
+        Execute a file inside the Docker container, using nsjail.
+        :param command_template: Something like
+            'docker exec {session_id} nsjail ... /usr/bin/python3 /volume/{volume_filename}'
+        :param volume_filename: The filename we will pass into the command
+        :param time_limit: The time limit in seconds
+        :return: dict with keys "stdout", "stderr", "returncode"
+        """
+        command = command_template.format(
+            session_id=self._session_id,
+            time_limit=time_limit,
+            volume_filename=volume_filename
+        )
+        try:
+            result = subprocess.run(
+                command,
+                shell=True,
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
+            )
+            return {
+                "stdout": result.stdout.decode("utf-8"),
+                "stderr": result.stderr.decode("utf-8"),
+                "returncode": result.returncode
+            }
+        except subprocess.CalledProcessError as e:
+            return {
+                "stdout": e.stdout.decode("utf-8"),
+                "stderr": e.stderr.decode("utf-8"),
+                "returncode": e.returncode
+            }
+
+    # def _execute_code_in_memory(self, command_template, code_string, time_limit):
+    #     """
+    #     Execute code in memory (like 'python -c' or 'node -e') inside Docker + nsjail.
+    #     :param command_template: Something like
+    #         'docker exec {session_id} nsjail ... /usr/bin/python3 -c {code}'
+    #     :param code_string: The user code
+    #     :param time_limit: The time limit in seconds
+    #     """
+    #     quoted_code = shlex.quote(code_string)
+    #     command = command_template.format(
+    #         session_id=self._session_id,
+    #         time_limit=time_limit,
+    #         code=quoted_code
+    #     )
+    #     try:
+    #         result = subprocess.run(
+    #             command,
+    #             shell=True,
+    #             check=True,
+    #             stdout=subprocess.PIPE,
+    #             stderr=subprocess.PIPE
+    #         )
+    #         return {
+    #             "stdout": result.stdout.decode("utf-8"),
+    #             "stderr": result.stderr.decode("utf-8"),
+    #             "returncode": result.returncode
+    #         }
+    #     except subprocess.CalledProcessError as e:
+    #         return {
+    #             "stdout": e.stdout.decode("utf-8"),
+    #             "stderr": e.stderr.decode("utf-8"),
+    #             "returncode": e.returncode
+    #         }
+
+    def _random_word(self):
+        return str(uuid.uuid4())
+
+# ------------------------------------------------------------------------------
+# SafeEvalPython
+# ------------------------------------------------------------------------------
+
+class SafeEvalPython(SafeEval):
+    """
+    Child class for evaluating Python code.
+    """
+
+    def __init__(self, version=None, modules=None, tmp_dir=None):
+        """
+        :param version: Python version tag, e.g. 3.8
+        :param modules: list of pip packages to install
+        :param tmp_dir: optionally override the base directory for .jailfs
+        """
+        self._container_has_started = False
+        self.python_version = version if version is not None else "3.8"
+        self.modules = modules if modules else []
+        self._session_id = "safe_eval_python" + self._random_word()
+        super().__init__(tmp_dir=tmp_dir, session_id = self._session_id)
+
+    def _create_dockerfile(self):
+        # create Dockerfile
+        with open(self._module_path / "Dockerfile_template_python.txt", "r") as f:
+            Dockerfile = f.read()
+
+        Dockerfile = Dockerfile.format(
+            version=self.python_version, 
+            modules="RUN pip3 install " + " ".join(self.modules)
+        )
+
+        with open(self._session_path / "Dockerfile", "w+") as f:
+            f.write(Dockerfile)
+
     def eval(self, code=None, time_limit=0, scope=None):
         """
-        Evaluate code with an optional time limit and an optional scope dict.
-        The scope dictionary contains variable names mapped to their values,
-        e.g. {"x": 2, "y": 4}.
+        Evaluate Python code with optional time limit (seconds) and scope dict.
         """
         if code is None:
-            return
+            return None
 
-        # If no scope is provided, default to empty
         if scope is None:
             scope = {}
 
-        # Build Python lines that define each variable in scope
-        # e.g. for {"x": 2, "y": 4}, we produce:
-        # x = 2
-        # y = 4
-        # REPR IS APPARENTLY SAFE TO USE HERE
+        # Build Python lines that define each variable
         scope_definitions = "\n".join(
             f"{var} = {json.dumps(val)};"
             for var, val in scope.items()
         )
 
-
-        # Combine scope definitions with the actual code
         code_with_scope = scope_definitions + "\n" + code
 
-        # Save code to the volume
-        volume_filename = self.__random_word() + ".py"
-        with open(self.__session_path / volume_filename, "w+", encoding="utf-8") as f:
+        # Write to a temporary file in the volume
+        volume_filename = self._random_word() + ".py"
+        with open(self._session_path / volume_filename, "w", encoding="utf-8") as f:
             f.write(code_with_scope)
 
-        # Execute file
-        return self.__execute_file_in_volume(volume_filename, time_limit)
-
-        # return self.__execute_code_in_memory(code, time_limit)
-        
-    def __execute_file_in_volume(self, volume_filename, time_limit):
-        command = ("docker exec {session_id} nsjail \
-            --user 99999 --group 99999 \
-            --disable_proc --chroot / --really_quiet \
-            --time_limit {time_limit} \
-            /usr/bin/python3 /volume/{volume_filename}"\
-            ).format(session_id=self.__session_id, time_limit=time_limit, volume_filename=volume_filename)
-        
-        try:
-            result = subprocess.run(command, shell=True, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            # Return both stdout and stderr
-            return {
-                "stdout": result.stdout.decode("utf-8"),
-                "stderr": result.stderr.decode("utf-8"),
-                "returncode": result.returncode
-            }
-        except subprocess.CalledProcessError as e:
-            return {
-                "stdout": e.stdout.decode("utf-8"),
-                "stderr": e.stderr.decode("utf-8"),
-                "returncode": e.returncode
-            }
-
-    def __execute_code_in_memory(self, code_string, time_limit):
-        # Safely quote the user code so it doesn't break out of shell
-        quoted_code = shlex.quote(code_string)
-
-        command = (
+        # Command template for running the .py file
+        python_command = (
             "docker exec {session_id} nsjail "
             "--user 99999 --group 99999 "
             "--disable_proc --chroot / --really_quiet "
             "--time_limit {time_limit} "
-            "/usr/bin/python3 -c {code}"
-        ).format(
-            session_id=self.__session_id,
-            time_limit=time_limit,
-            code=quoted_code
+            "/usr/bin/python3 /volume/{volume_filename}"
         )
-        
-        try:
-            result = subprocess.run(command, shell=True, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            # Return both stdout and stderr
-            return {
-                "stdout": result.stdout.decode("utf-8"),
-                "stderr": result.stderr.decode("utf-8"),
-                "returncode": result.returncode
-            }
-        except subprocess.CalledProcessError as e:
-            return {
-                "stdout": e.stdout.decode("utf-8"),
-                "stderr": e.stderr.decode("utf-8"),
-                "returncode": e.returncode
-            }
+        return self._execute_file_in_volume(python_command, volume_filename, time_limit)
 
-    def __random_word(self):
-        # Generate a random UUID
-        random_uuid = uuid.uuid4()
+# ------------------------------------------------------------------------------
+# SafeEvalJavaScript
+# ------------------------------------------------------------------------------
 
-        # Convert the UUID to a string
-        random_uuid_str = str(random_uuid)
-        return random_uuid_str
+class SafeEvalJavaScript(SafeEval):
+    """
+    Child class for evaluating JavaScript code (Node.js).
+    """
+
+    def __init__(self, version=None, modules=None, tmp_dir=None):
+        """
+        :param version: Node.js version tag, e.g. '16',  etc.
+        :param modules: list of npm packages to install globally
+        :param tmp_dir: optionally override the base directory for .jailfs
+        """
+        self._container_has_started = False
+        self.node_version = version if version is not None else "16"
+        self.modules = modules if modules else []
+        self._session_id = "safe_eval_javascript" + self._random_word()
+        super().__init__(tmp_dir=tmp_dir, session_id = self._session_id)
+
+    def _create_dockerfile(self):
+        # create Dockerfile
+        with open(self._module_path / "Dockerfile_template_javascript.txt", "r") as f:
+            Dockerfile = f.read()
+
+        Dockerfile = Dockerfile.format(
+            version=self.node_version,
+            modules="RUN npm install -g " + " ".join(self.modules) if self.modules else ""
+        )
+
+        with open(self._session_path / "Dockerfile", "w+") as f:
+            f.write(Dockerfile)
+            
     
+    def eval(self, code=None, time_limit=0, scope=None):
+        """
+        Evaluate JS code with optional time limit (seconds) and scope dict.
+        """
+        if code is None:
+            return None
+
+        if scope is None:
+            scope = {}
+
+        # Prepend scope variables as `let x = ...;`
+        scope_definitions = "\n".join(
+            f"let {var} = {json.dumps(val)};"
+            for var, val in scope.items()
+        )
+
+        code_with_scope = scope_definitions + "\n" + code
+
+        # Write to a temporary file in the volume
+        volume_filename = self._random_word() + ".js"
+        with open(self._session_path / volume_filename, "w", encoding="utf-8") as f:
+            f.write(code_with_scope)
+
+        # Command template for running the .js file
+        node_command = (
+            self._docker_nsjail_base_command + 
+            "/usr/bin/node /volume/{volume_filename}"
+        )
+        return self._execute_file_in_volume(node_command, volume_filename, time_limit)
+
+
+# ------------------------------------------------------------------------------
+# Example usage
+# ------------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    sf = SafeEval(version="3.8", modules=["setuptools"])
-    print(sf.eval(code="""import time
-print("done")
-a = x + 1
-y = 1 + y
-print(a, y)""", 
-    scope={"x": 2, "y": 4},
-    time_limit=15))
+    print("=== Python example ===")
+    py_eval = SafeEvalPython(version="3.8", modules=["requests"])
+    result_py = py_eval.eval(
+        code="""
+import requests
+print("Hello from Python!")
+print("x:", x)
+print("y:", y)
+""",
+        scope={"x": 100, "y": 200},
+        time_limit=10
+    )
+    print("Python STDOUT:", result_py["stdout"])
+    print("Python STDERR:", result_py["stderr"])
+    print("Python RETURN CODE:", result_py["returncode"])
+
+    print("=== JavaScript example ===")
+    js_eval = SafeEvalJavaScript(version="16", modules=[])
+    result_js = js_eval.eval(
+        code="""
+// Define x and y variables
+
+// Example outputs
+console.log("Hello from Node.js!");
+console.log("x + 2 =", x + 2);
+console.log("y * 3 =", y * 3);
+""",
+        scope={"x": 10, "y": 5},
+        time_limit=10
+    )
+    print("JS STDOUT:", result_js["stdout"])
+    print("JS STDERR:", result_js["stderr"])
+    print("JS RETURN CODE:", result_js["returncode"])

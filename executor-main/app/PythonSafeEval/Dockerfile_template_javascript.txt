@@ -1,0 +1,27 @@
+FROM ubuntu:18.04
+
+RUN apt-get -y update && apt-get install -y \
+    autoconf \
+    bison \
+    flex \
+    gcc \
+    g++ \
+    git \
+    libprotobuf-dev \
+    libnl-route-3-dev \
+    libtool \
+    make \
+    pkg-config \
+    protobuf-compiler \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Node.js 16.x and a compatible version of npm
+RUN curl -fsSL https://deb.nodesource.com/setup_16.x | bash - && \
+    apt-get install -y nodejs && \
+    npm install -g npm@8 && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY ./.nsjail /nsjail
+RUN cd /nsjail && make && mv /nsjail/nsjail /bin && rm -rf -- /nsjail
+{modules}

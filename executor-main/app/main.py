@@ -44,8 +44,7 @@ def root():
 
 @app.post("/evaluate")
 async def evaluate(request: Request):
-    await asyncio.sleep(10)
-    return {"output": 2}
+    
 
     evaluator = SafeEval()
     safe_globals = {"__builtins__": {}}
