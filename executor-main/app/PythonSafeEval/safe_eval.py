@@ -125,7 +125,12 @@ class SafeEval:
         Run the Docker container in detached mode.
         """
         run_cmd = (
-            f'docker run --rm --privileged --security-opt seccomp={self._seccomp_path} --name={self._session_id} '
+            f'docker run --rm --cap-drop=NET_ADMIN \
+  --cap-drop=SYS_ADMIN \
+  --cap-drop=MKNOD \
+  --cap-drop=CHOWN \
+  --cap-drop=SYS_TIME \
+  --privileged --read-only --cpus="1.5" --memory="512m" --security-opt seccomp={self._seccomp_path} --name={self._session_id} '
             f'-v "{self._session_path}:/volume" '
             f'-d -it {self._session_id}_image'
         )
@@ -271,7 +276,7 @@ class SafeEvalPython(SafeEval):
             "        " + scope_definitions.replace("\n", "\n        ") + "\n"
             "        " + code.replace("\n", "\n        ") + "\n"  # Indent user code
             "    result = user_code()\n"
-            "    print('" + self._random_string  + "' + json.dumps({'returnValue': result}))\n"
+            "    print('" + self._random_string + "' + json.dumps({'returnValue': result}))\n"
             "except Exception as e:\n"
             "    print(json.dumps({'error': str(e)}), file=sys.stderr)\n"
         )

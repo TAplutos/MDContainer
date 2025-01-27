@@ -3,7 +3,21 @@ making scope as variables rather than arguments so you can do shit like x:2 and 
 update the weird hash mechanism of getting the return value
 make it faster, its kinda slow
 GPT processing of the output for simple user understanding.  LLM auto correct?
-
+clear the docker process that created when running safe_eval
+figure out networking
+get the seccomp figured out
+fix the damn imports in main.py
+make everything neater
+configure options for making containerization more modular depending on a bunch of flags
+get it to work with additional types by specifying another field besides params like "dates" "bigints" and whatnot
+how to stop using our shit to ddos
+More robust tests
+add Non-Root User to container and execute as him
+Specify package versions
+Run docker scan?
+execute in memory rather than writing to file
+remove dependencies once done
+restrict programs to writing output to already-open file descriptors
 
 # General Guidelines
 Thank you for interviewing with Sample! This README should serve as the instructions for your interview, and if needed you can directly contact me at (408) 425 2215 or via email (aash@samplehc.com).
